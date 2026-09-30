@@ -18,6 +18,10 @@ import aiohttp
 from agent import config
 from agent.config import VIDEO_POLL_INTERVAL, VIDEO_POLL_TIMEOUT
 from agent.db import crud
+from agent.services.omni_flash import (
+    generate_omni_flash_first_frame_video,
+    generate_omni_flash_first_last_video,
+)
 from agent.sdk.services.provider_base import (
     KIND_EDIT_IMAGE,
     KIND_IMAGE,
@@ -377,15 +381,36 @@ class FlowProvider(MediaProvider):
             operations = [{"operation": {"name": existing_op}, "status": "MEDIA_GENERATION_STATUS_PENDING"}]
             return await _poll_operations(self._client, operations)
 
-        submit_result = await self._client.generate_video(
-            start_image_media_id=ex.get("start_media_id", ""),
-            prompt=job.prompt,
-            project_id=ex.get("project_id", "0"),
-            scene_id=ex.get("scene_id", ""),
-            aspect_ratio=ex.get("aspect", "VIDEO_ASPECT_RATIO_PORTRAIT"),
-            end_image_media_id=ex.get("end_media_id"),
-            user_paygate_tier=ex.get("tier", "PAYGATE_TIER_TWO"),
-        )
+        # The project's video_model_family picks the Flow family. Omni Flash
+        # returns the same batch-operation shape as Veo, so polling and the
+        # retry-repoll guard above are shared.
+        if ex.get("model_family") == "omni_flash":
+            common = dict(
+                start_image_media_id=ex.get("start_media_id", ""),
+                prompt=job.prompt,
+                project_id=ex.get("project_id", "0"),
+                scene_id=ex.get("scene_id", ""),
+                duration_s=int(ex.get("duration_s") or config.OMNI_FLASH_DURATION_S),
+                resolution=ex.get("resolution") or config.OMNI_FLASH_RESOLUTION,
+                aspect_ratio=ex.get("aspect", "VIDEO_ASPECT_RATIO_PORTRAIT"),
+                user_paygate_tier=ex.get("tier", "PAYGATE_TIER_TWO"),
+            )
+            end_id = ex.get("end_media_id")
+            if end_id:
+                submit_result = await generate_omni_flash_first_last_video(
+                    end_image_media_id=end_id, **common)
+            else:
+                submit_result = await generate_omni_flash_first_frame_video(**common)
+        else:
+            submit_result = await self._client.generate_video(
+                start_image_media_id=ex.get("start_media_id", ""),
+                prompt=job.prompt,
+                project_id=ex.get("project_id", "0"),
+                scene_id=ex.get("scene_id", ""),
+                aspect_ratio=ex.get("aspect", "VIDEO_ASPECT_RATIO_PORTRAIT"),
+                end_image_media_id=ex.get("end_media_id"),
+                user_paygate_tier=ex.get("tier", "PAYGATE_TIER_TWO"),
+            )
 
         if _is_error(submit_result):
             logger.error("[DEBUG] Video gen submit_result IS_ERROR: %s", str(submit_result)[:2000])
