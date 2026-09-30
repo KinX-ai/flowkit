@@ -99,3 +99,21 @@ async def test_project_update_persists_video_model_family(test_db):
     assert p["video_model_family"] == "veo"
     row = await crud._update("project", "id", p["id"], video_model_family="omni_flash")
     assert row["video_model_family"] == "omni_flash"
+
+
+def test_flow_provider_rate_limits_come_from_env(monkeypatch):
+    """A session that fires generates every 10s trips Flow's UNUSUAL_ACTIVITY guard;
+    operators must be able to slow the worker without editing code."""
+    import importlib
+    from agent import config
+    monkeypatch.setenv("FLOW_MAX_CONCURRENT", "1")
+    monkeypatch.setenv("FLOW_COOLDOWN_S", "45")
+    importlib.reload(config)
+    import agent.sdk.services.flow_provider as fp
+    importlib.reload(fp)
+    try:
+        assert fp.FlowProvider.capabilities.max_concurrent == 1
+        assert fp.FlowProvider.capabilities.cooldown_s == 45.0
+    finally:
+        monkeypatch.delenv("FLOW_MAX_CONCURRENT"); monkeypatch.delenv("FLOW_COOLDOWN_S")
+        importlib.reload(config); importlib.reload(fp)

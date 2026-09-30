@@ -286,8 +286,8 @@ class FlowProvider(MediaProvider):
         generate_video_i2v=True,
         generate_video_r2v=True,
         upscale=True,
-        max_concurrent=5,
-        cooldown_s=10.0,
+        max_concurrent=config.FLOW_MAX_CONCURRENT,
+        cooldown_s=config.FLOW_COOLDOWN_S,
     )
 
     def __init__(self, client) -> None:
