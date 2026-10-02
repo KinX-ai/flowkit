@@ -17,11 +17,27 @@ PYTHON_BIN = os.environ.get("TTS_PYTHON_BIN", "python3.10")
 # Shared by both inline scripts. OmniVoice.generate() returns a list of 1-D
 # numpy arrays; torchaudio.save wants a 2-D (channels, samples) tensor, so
 # the raw item cannot be handed over as-is ("Expected 2D Tensor, got 1D").
-_TO_WAV_TENSOR = """
-def _to_wav_tensor(item):
+#
+# OmniVoice also stops at the very last voiced sample: no release tail, so the
+# final vowel is clipped and a cut placed at wav end lands mid-sound. Fade the
+# last TAIL_FADE_S down and append TAIL_PAD_S of silence so narration ends
+# cleanly and downstream "trim to narrator length" leaves a natural breath.
+TAIL_FADE_S = 0.06
+TAIL_PAD_S = 0.4
+_TO_WAV_TENSOR = f"""
+TAIL_FADE_S = {TAIL_FADE_S}
+TAIL_PAD_S = {TAIL_PAD_S}
+def _to_wav_tensor(item, sample_rate):
     w = item if isinstance(item, torch.Tensor) else torch.as_tensor(item)
     w = w.detach().cpu().float()
-    return w.unsqueeze(0) if w.ndim == 1 else w
+    w = w.unsqueeze(0) if w.ndim == 1 else w
+    n = w.shape[1]
+    fade = min(int(TAIL_FADE_S * sample_rate), n)
+    if fade > 0:
+        w = w.clone()
+        w[:, n - fade:] *= torch.linspace(1.0, 0.0, fade)
+    pad = torch.zeros(w.shape[0], int(TAIL_PAD_S * sample_rate))
+    return torch.cat([w, pad], dim=1)
 """
 
 # Inline script template for TTS generation via subprocess
@@ -44,7 +60,7 @@ if args.get("speed") and args["speed"] != 1.0:
     kwargs["speed"] = args["speed"]
 
 audio = model.generate(**kwargs)
-torchaudio.save(args["output"], _to_wav_tensor(audio[0]), args["sample_rate"])
+torchaudio.save(args["output"], _to_wav_tensor(audio[0], args["sample_rate"]), args["sample_rate"])
 print(json.dumps({"ok": True, "path": args["output"]}))
 """
 
@@ -73,7 +89,7 @@ for item in args["items"]:
 
         audio = model.generate(**kwargs)
         Path(item["output"]).parent.mkdir(parents=True, exist_ok=True)
-        torchaudio.save(item["output"], _to_wav_tensor(audio[0]), args["sample_rate"])
+        torchaudio.save(item["output"], _to_wav_tensor(audio[0], args["sample_rate"]), args["sample_rate"])
 
         info = torchaudio.info(item["output"])
         duration = info.num_frames / info.sample_rate

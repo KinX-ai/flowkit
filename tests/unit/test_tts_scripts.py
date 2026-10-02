@@ -69,7 +69,7 @@ def test_single_script_saves_1d_numpy_output_as_2d(fake_modules, tmp_path, capsy
         "model": "m", "text": "xin chào", "output": str(out), "sample_rate": 24000,
     }, capsys)
     assert result["ok"] is True
-    assert _FakeTorchaudio.saved == [(str(out), (1, 2400), 24000)]
+    assert _FakeTorchaudio.saved == [(str(out), (1, 2400 + int(tts_mod.TAIL_PAD_S * 24000)), 24000)]
 
 
 def test_batch_script_saves_1d_numpy_output_as_2d(fake_modules, tmp_path, capsys):
@@ -79,7 +79,7 @@ def test_batch_script_saves_1d_numpy_output_as_2d(fake_modules, tmp_path, capsys
         "items": [{"id": "s1", "text": "xin chào", "output": str(out)}],
     }, capsys)
     assert results == [{"id": "s1", "ok": True, "path": str(out), "duration": 1.0}]
-    assert _FakeTorchaudio.saved == [(str(out), (1, 2400), 24000)]
+    assert _FakeTorchaudio.saved == [(str(out), (1, 2400 + int(tts_mod.TAIL_PAD_S * 24000)), 24000)]
 
 
 def test_scripts_honour_device_arg(fake_modules, tmp_path, capsys):
@@ -98,3 +98,36 @@ def test_generate_speech_passes_configured_device(monkeypatch, tmp_path):
     import asyncio
     asyncio.run(tts_mod.generate_speech("hi", str(tmp_path / "o.wav")))
     assert captured["device"] == "cuda"
+
+
+class _FakeOmniVoiceHot(_FakeOmniVoice):
+    """Returns audio that is still loud at the very last sample — OmniVoice
+    stops exactly where the voice stops, so the final vowel gets clipped."""
+
+    def generate(self, **kwargs):
+        return [np.full(2400, 0.5, dtype=np.float32)]
+
+
+def test_saved_wav_has_silent_tail_and_fade(fake_modules, tmp_path, capsys, monkeypatch):
+    torch = fake_modules
+    captured = {}
+
+    def save(path, tensor, sample_rate):
+        captured["t"] = tensor
+        captured["sr"] = sample_rate
+    monkeypatch.setattr(_FakeTorchaudio, "save", staticmethod(save))
+    ov = types.ModuleType("omnivoice"); ov.OmniVoice = _FakeOmniVoiceHot
+    monkeypatch.setitem(sys.modules, "omnivoice", ov)
+
+    _run(tts_mod._TTS_SCRIPT, {"model": "m", "text": "hi", "output": str(tmp_path / "o.wav"),
+                               "sample_rate": 24000, "ref_audio": None, "ref_text": None,
+                               "instruct": None, "language": "vi"}, capsys)
+    t = captured["t"]
+    sr = captured["sr"]
+    assert t.shape[0] == 1
+    assert t.shape[1] >= 2400 + int(0.3 * sr), "no silence appended after the voice"
+    assert float(t[0, -1].abs()) < 1e-6, "tail is not silent"
+    # the original last voiced sample must have been faded down, not hard-cut
+    assert float(t[0, 2399].abs()) < 0.05, "no fade-out before the pad"
+    # voice body (before the 60ms fade window) untouched
+    assert abs(float(t[0, 500]) - 0.5) < 1e-6
