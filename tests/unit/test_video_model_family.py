@@ -117,3 +117,41 @@ def test_flow_provider_rate_limits_come_from_env(monkeypatch):
     finally:
         monkeypatch.delenv("FLOW_MAX_CONCURRENT"); monkeypatch.delenv("FLOW_COOLDOWN_S")
         importlib.reload(config); importlib.reload(fp)
+
+
+@pytest.mark.asyncio
+async def test_generate_scene_video_passes_scene_duration_for_omni():
+    """scene.duration (seconds) must reach the Omni Flash call so a scene whose
+    narration outruns the 8s default can be rendered at 10s instead of being
+    padded with a frozen last frame in post."""
+    from agent.sdk.services.operations import OperationService
+
+    captured = {}
+
+    async def fake_run(self, job, provider=None):
+        captured.update(job.extra)
+        return {"data": {}}
+
+    scene = {"id": "s1", "_project_id": "p1", "horizontal_image_media_id": "img-1",
+             "horizontal_image_url": "file:///x.png", "video_prompt": "walk", "display_order": 1,
+             "duration": 10}
+    with patch("agent.sdk.services.operations.crud") as crud, \
+         patch("agent.sdk.services.operations._build_video_prompt", new=AsyncMock(return_value="p")), \
+         patch.object(OperationService, "_run_provider_job", fake_run), \
+         patch.object(OperationService, "_resolve_chain_end_url", new=AsyncMock(return_value=None)):
+        crud.get_project = AsyncMock(return_value={"user_paygate_tier": "PAYGATE_TIER_TWO",
+                                                   "video_model_family": "omni_flash"})
+        await OperationService.__new__(OperationService).generate_scene_video(scene, "HORIZONTAL")
+    assert captured["duration_s"] == 10
+
+
+@pytest.mark.asyncio
+async def test_omni_flash_rounds_duration_up_to_supported_step():
+    """Omni Flash only accepts 4/6/8/10s; a 8.8s request must become 10, never 8."""
+    client = AsyncMock()
+    submitted = {"data": {"operations": [{"operation": {"name": "op"}, "status": "MEDIA_GENERATION_STATUS_PENDING"}]}}
+    with patch("agent.sdk.services.flow_provider.generate_omni_flash_first_frame_video",
+               new=AsyncMock(return_value=submitted)) as omni, \
+         patch("agent.sdk.services.flow_provider._poll_operations", new=AsyncMock(return_value={"data": {}})):
+        await FlowProvider(client)._run_video(_job(model_family="omni_flash", duration_s=8.8))
+    assert omni.await_args.kwargs["duration_s"] == 10

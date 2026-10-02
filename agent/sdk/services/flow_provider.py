@@ -19,9 +19,25 @@ from agent import config
 from agent.config import VIDEO_POLL_INTERVAL, VIDEO_POLL_TIMEOUT
 from agent.db import crud
 from agent.services.omni_flash import (
+    OMNI_FLASH_VALID_DURATIONS,
     generate_omni_flash_first_frame_video,
     generate_omni_flash_first_last_video,
 )
+
+
+def _omni_duration(requested) -> int:
+    """Round a requested clip length up to the next Omni Flash step (4/6/8/10s).
+
+    Rounding *down* would clip narration; anything past the max is capped.
+    None/0 falls back to OMNI_FLASH_DURATION_S.
+    """
+    if not requested:
+        return int(config.OMNI_FLASH_DURATION_S)
+    want = float(requested)
+    for step in OMNI_FLASH_VALID_DURATIONS:
+        if step >= want - 1e-6:
+            return step
+    return OMNI_FLASH_VALID_DURATIONS[-1]
 from agent.sdk.services.provider_base import (
     KIND_EDIT_IMAGE,
     KIND_IMAGE,
@@ -390,7 +406,7 @@ class FlowProvider(MediaProvider):
                 prompt=job.prompt,
                 project_id=ex.get("project_id", "0"),
                 scene_id=ex.get("scene_id", ""),
-                duration_s=int(ex.get("duration_s") or config.OMNI_FLASH_DURATION_S),
+                duration_s=_omni_duration(ex.get("duration_s")),
                 resolution=ex.get("resolution") or config.OMNI_FLASH_RESOLUTION,
                 aspect_ratio=ex.get("aspect", "VIDEO_ASPECT_RATIO_PORTRAIT"),
                 user_paygate_tier=ex.get("tier", "PAYGATE_TIER_TWO"),

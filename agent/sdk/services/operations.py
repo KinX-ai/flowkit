@@ -300,6 +300,10 @@ class OperationService:
                 "end_media_id": end_id,
                 "request_id": request_id,
                 "model_family": model_family,
+                # Per-scene clip length (seconds). Omni Flash honours it (rounded
+                # up to 4/6/8/10); Veo ignores it. Lets a scene whose narration
+                # outruns the default be rendered longer instead of padded in post.
+                "duration_s": scene.get("duration"),
                 "project_name": project.get("name") if project else "",
                 "display_order": scene.get("display_order", 0),
             },
