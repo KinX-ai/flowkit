@@ -23,6 +23,7 @@ from agent.api.materials import router as materials_router
 from agent.api.music import router as music_router
 from agent.api.models import router as models_router
 from agent.api.providers import router as providers_router
+from agent.api.provider_jobs import router as provider_jobs_router
 from agent.api.active_project import router as active_project_router
 from agent.worker.processor import get_worker_controller
 from agent.services.flow_client import get_flow_client
@@ -122,6 +123,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_GENERATION_PATHS = {
+    "/api/flow/generate-image",
+    "/api/flow/generate-video",
+    "/api/flow/generate-video-refs",
+    "/api/flow/generate-video-omni",
+    "/api/flow/generate-video-omni-text",
+    "/api/flow/edit-image",
+}
+
+
+@app.middleware("http")
+async def flow_caller_observability(request: Request, call_next):
+    """Attribute generation submits without logging prompts, media or secrets."""
+    response = await call_next(request)
+    if request.method == "POST" and request.url.path in _GENERATION_PATHS:
+        caller = (request.headers.get("x-flowkit-caller") or "unknown")[:80]
+        logger.info(
+            "Flow generation request caller=%s path=%s status=%s",
+            caller,
+            request.url.path,
+            response.status_code,
+        )
+    return response
+
+
 app.include_router(characters_router, prefix="/api")
 app.include_router(projects_router, prefix="/api")
 app.include_router(videos_router, prefix="/api")
@@ -132,6 +158,7 @@ app.include_router(reviews_router, prefix="/api")
 app.include_router(tts_router, prefix="/api")
 app.include_router(materials_router, prefix="/api")
 app.include_router(music_router, prefix="/api")
+app.include_router(provider_jobs_router, prefix="/api")
 app.include_router(models_router)
 app.include_router(providers_router)
 app.include_router(active_project_router)

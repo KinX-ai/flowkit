@@ -1,10 +1,18 @@
 """Direct Flow API endpoints — for manual operations outside the queue."""
-from fastapi import APIRouter, HTTPException, Response
+import base64
+import mimetypes
+
+from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel, Field
 from typing import Any, Literal, Optional
 
-from agent.config import FLOW_PROJECT_ID, FLOW_ALLOW_DEGRADED
+from agent.config import (
+    FLOW_PROJECT_ID, FLOW_ALLOW_DEGRADED,
+    FLOW_GENERATION_MIN_INTERVAL_S, FLOW_GENERATION_MAX_CONCURRENT,
+    FLOW_UNUSUAL_ACTIVITY_COOLDOWN_S,
+)
 from agent.services.flow_client import get_flow_client
+from agent.services.flow_project_session import current_session_project, ensure_session_project
 from agent.services.omni_flash import (
     check_omni_flash_status,
     generate_omni_flash_first_frame_video,
@@ -24,7 +32,7 @@ def _safe_status_code(status: Any, default: int = 502) -> int:
 
 class GenerateImageRequest(BaseModel):
     prompt: str
-    project_id: str
+    project_id: str = ""
     aspect_ratio: str = "IMAGE_ASPECT_RATIO_PORTRAIT"
     user_paygate_tier: str = "PAYGATE_TIER_ONE"
     image_model: Optional[str] = None
@@ -37,7 +45,7 @@ class GenerateImageRequest(BaseModel):
 class GenerateVideoRequest(BaseModel):
     start_image_media_id: str
     prompt: str
-    project_id: str
+    project_id: str = ""
     scene_id: str
     aspect_ratio: str = "VIDEO_ASPECT_RATIO_PORTRAIT"
     end_image_media_id: Optional[str] = None
@@ -51,7 +59,7 @@ class GenerateVideoRequest(BaseModel):
 class GenerateVideoRefsRequest(BaseModel):
     reference_media_ids: list[str]
     prompt: str
-    project_id: str
+    project_id: str = ""
     scene_id: str
     aspect_ratio: str = "VIDEO_ASPECT_RATIO_PORTRAIT"
     user_paygate_tier: str = "PAYGATE_TIER_ONE"
@@ -65,7 +73,7 @@ class GenerateVideoRefsRequest(BaseModel):
 class GenerateOmniFlashVideoRequest(BaseModel):
     reference_media_ids: list[str]
     prompt: str
-    project_id: str
+    project_id: str = ""
     scene_id: str = ""
     duration_s: int = 8
     resolution: Literal["360p", "720p"] = "720p"
@@ -75,9 +83,10 @@ class GenerateOmniFlashVideoRequest(BaseModel):
 
 class GenerateOmniFlashTextVideoRequest(BaseModel):
     prompt: str
-    project_id: str
+    project_id: str = ""
     scene_id: str = ""
     duration_s: int = 8
+    resolution: Literal["360p", "720p"] = "720p"
     aspect_ratio: str = "VIDEO_ASPECT_RATIO_PORTRAIT"
     user_paygate_tier: str = "PAYGATE_TIER_ONE"
 
@@ -90,9 +99,30 @@ class UpscaleVideoRequest(BaseModel):
 
 
 class UploadImageRequest(BaseModel):
-    file_path: str  # absolute path to local image file
-    project_id: str = ""
-    file_name: str = "image.png"
+    image_base64: Optional[str] = Field(
+        default=None,
+        description=(
+            "Recommended for external/API callers. Base64-encoded image bytes; "
+            "avoids filesystem namespace and permission issues."
+        ),
+    )
+    file_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Server-local convenience mode only. The path is opened by the FlowKit "
+            "service user and must be visible/readable inside its systemd namespace. "
+            "Caller-local /tmp and protected home paths may not be accessible."
+        ),
+    )
+    mime_type: Optional[str] = Field(
+        default=None,
+        description="Optional MIME override; otherwise inferred from file_name/file_path.",
+    )
+    project_id: str = Field(
+        default="",
+        description="Existing Flow project id, or empty to use/create the session project.",
+    )
+    file_name: str = Field(default="image.png", description="Filename sent to Google Flow.")
 
 
 class CheckStatusRequest(BaseModel):
@@ -129,6 +159,20 @@ class UpscaleImageRequest(BaseModel):
     quality: Literal["2k", "4k"] = "2k"
 
 
+async def _resolve_direct_project(client, project_id: str) -> str:
+    pid = str(project_id or "").strip()
+    if pid:
+        return pid
+    try:
+        session = await ensure_session_project(client)
+    except Exception as exc:
+        raise HTTPException(502, f"Could not create Flow session project: {exc}") from exc
+    pid = str(session.get("project_id") or "")
+    if not pid:
+        raise HTTPException(502, "Flow session project did not return an id")
+    return pid
+
+
 @router.get("/status")
 async def extension_status():
     """Extension health.
@@ -145,6 +189,31 @@ async def extension_status():
         "flow_project_id": FLOW_PROJECT_ID or None,
         "allow_degraded": FLOW_ALLOW_DEGRADED,
         "flow_key_present": client._flow_key is not None,
+        "generation_throttle": {
+            "min_interval_s": FLOW_GENERATION_MIN_INTERVAL_S,
+            "max_concurrent": FLOW_GENERATION_MAX_CONCURRENT,
+            "unusual_activity_cooldown_s": FLOW_UNUSUAL_ACTIVITY_COOLDOWN_S,
+            **client.generation_guard_status,
+        },
+        "session_project": current_session_project(),
+    }
+
+
+@router.post("/clear-hijack")
+async def clear_hijack_cooldown():
+    """Reset the generation cooldown triggered by extension_hijack_detected.
+
+    Call this after deploying the bypass fix to immediately resume generation
+    without waiting for the cooldown to expire.
+    """
+    import time as _time
+    client = get_flow_client()
+    old_until = client._generation_unusual_until
+    client._generation_unusual_until = 0.0
+    was_active = old_until > 0.0 and old_until > _time.monotonic()
+    return {
+        "cleared": True,
+        "was_active": was_active,
     }
 
 
@@ -166,7 +235,9 @@ async def generate_image(body: GenerateImageRequest):
     client = get_flow_client()
     if not client.connected:
         raise HTTPException(503, "Extension not connected")
+    project_id = await _resolve_direct_project(client, body.project_id)
     data = body.model_dump(exclude={"reference_media_ids"})
+    data["project_id"] = project_id
     refs = list(dict.fromkeys((body.reference_media_ids or []) + (body.character_media_ids or [])))
     data["character_media_ids"] = refs or None
     result = await client.generate_images(**data)
@@ -190,13 +261,14 @@ async def generate_video(body: GenerateVideoRequest):
     client = get_flow_client()
     if not client.connected:
         raise HTTPException(503, "Extension not connected")
+    project_id = await _resolve_direct_project(client, body.project_id)
 
     if body.model_family == "omni_flash":
         try:
             common = dict(
                 start_image_media_id=body.start_image_media_id,
                 prompt=body.prompt,
-                project_id=body.project_id,
+                project_id=project_id,
                 scene_id=body.scene_id,
                 duration_s=body.duration_s,
                 resolution=body.resolution,
@@ -213,9 +285,11 @@ async def generate_video(body: GenerateVideoRequest):
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
     else:
-        result = await client.generate_video(
-            **body.model_dump(exclude={"model_family", "duration_s", "resolution"}, exclude_none=True)
+        payload = body.model_dump(
+            exclude={"model_family", "duration_s", "resolution"}, exclude_none=True
         )
+        payload["project_id"] = project_id
+        result = await client.generate_video(**payload)
 
     if result.get("error") or (isinstance(result.get("status"), int) and result["status"] >= 400):
         raise HTTPException(_safe_status_code(result.get("status")), result.get("error", result.get("data")))
@@ -234,13 +308,14 @@ async def generate_video_refs(body: GenerateVideoRefsRequest):
     client = get_flow_client()
     if not client.connected:
         raise HTTPException(503, "Extension not connected")
+    project_id = await _resolve_direct_project(client, body.project_id)
 
     if body.model_family == "omni_flash":
         try:
             result = await generate_omni_flash_video(
                 reference_media_ids=body.reference_media_ids,
                 prompt=body.prompt,
-                project_id=body.project_id,
+                project_id=project_id,
                 scene_id=body.scene_id,
                 duration_s=body.duration_s,
                 resolution=body.resolution,
@@ -250,9 +325,9 @@ async def generate_video_refs(body: GenerateVideoRefsRequest):
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
     else:
-        result = await client.generate_video_from_references(
-            **body.model_dump(exclude={"model_family", "duration_s", "resolution"})
-        )
+        payload = body.model_dump(exclude={"model_family", "duration_s", "resolution"})
+        payload["project_id"] = project_id
+        result = await client.generate_video_from_references(**payload)
 
     if result.get("error") or (isinstance(result.get("status"), int) and result["status"] >= 400):
         raise HTTPException(_safe_status_code(result.get("status")), result.get("error", result.get("data")))
@@ -268,8 +343,11 @@ async def generate_video_omni_text(body: GenerateOmniFlashTextVideoRequest):
     client = get_flow_client()
     if not client.connected:
         raise HTTPException(503, "Extension not connected")
+    project_id = await _resolve_direct_project(client, body.project_id)
     try:
-        result = await generate_omni_flash_text_video(**body.model_dump())
+        payload = body.model_dump()
+        payload["project_id"] = project_id
+        result = await generate_omni_flash_text_video(**payload)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     if result.get("error") or (
@@ -292,8 +370,11 @@ async def generate_video_omni(body: GenerateOmniFlashVideoRequest):
     client = get_flow_client()
     if not client.connected:
         raise HTTPException(503, "Extension not connected")
+    project_id = await _resolve_direct_project(client, body.project_id)
     try:
-        result = await generate_omni_flash_video(**body.model_dump())
+        payload = body.model_dump()
+        payload["project_id"] = project_id
+        result = await generate_omni_flash_video(**payload)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     if result.get("error") or (isinstance(result.get("status"), int) and result["status"] >= 400):
@@ -367,7 +448,28 @@ async def check_omni_status(body: CheckOmniStatusRequest):
 
 @router.post("/refresh-urls/{project_id}")
 async def refresh_project_urls(project_id: str):
-    """Bulk refresh all media URLs for a project via per-media get_media calls."""
+    """Bulk refresh all media URLs for a project via per-media get_media calls.
+
+    Provider-neutral no-op: when every stored URL is local (file://), there is
+    nothing to re-sign and the extension is not required.
+    """
+    from agent.db import crud
+
+    urls: list[str] = []
+    for video in await crud.list_videos(project_id):
+        for scene in await crud.list_scenes(video["id"]):
+            for k, v in scene.items():
+                if k.endswith("_url") and v:
+                    urls.append(v)
+    for char in await crud.get_project_characters(project_id):
+        for k, v in char.items():
+            if k.endswith("_url") and v:
+                urls.append(v)
+
+    if not any(u.startswith("http") for u in urls):
+        return {"refreshed": 0, "found": len(urls),
+                "skipped": "no remote media URLs (all local or none); nothing to refresh"}
+
     client = get_flow_client()
     if not client.connected:
         raise HTTPException(503, "Extension not connected")
@@ -451,25 +553,159 @@ async def export_image(body: UpscaleImageRequest):
     )
 
 
-@router.post("/upload-image")
+async def _upload_image_bytes(
+    client,
+    image_bytes: bytes,
+    *,
+    project_id: str,
+    mime_type: str,
+    file_name: str,
+) -> dict:
+    """Upload bytes through the shared Flow path and return the public response."""
+    if not image_bytes:
+        raise HTTPException(422, "image payload is empty")
+    resolved_project_id = await _resolve_direct_project(client, project_id)
+    b64 = base64.b64encode(image_bytes).decode()
+    result = await client.upload_image(
+        b64,
+        mime_type=mime_type,
+        project_id=resolved_project_id,
+        file_name=file_name,
+    )
+    if result.get("error") or (
+        isinstance(result.get("status"), int) and result["status"] >= 400
+    ):
+        raise HTTPException(
+            result.get("status", 502),
+            result.get("error", result.get("data")),
+        )
+    media_id = result.get("_mediaId")
+    return {
+        "media_id": media_id,
+        "project_id": resolved_project_id,
+        "raw": result.get("data", result),
+    }
+
+
+def _read_server_local_image(file_path: str) -> bytes:
+    """Read a path from FlowKit's own service namespace with useful API errors."""
+    try:
+        with open(file_path, "rb") as f:
+            return f.read()
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            404,
+            (
+                "Server-local file is not visible to the FlowKit service: "
+                f"{file_path}. External callers should use image_base64 or "
+                "/api/flow/upload-image-file; caller-local /tmp paths may be hidden "
+                "by systemd PrivateTmp."
+            ),
+        ) from exc
+    except PermissionError as exc:
+        raise HTTPException(
+            403,
+            (
+                "File is not readable by FlowKit service: "
+                f"{file_path}. The path must be readable by the service user; "
+                "external callers should use image_base64 or /api/flow/upload-image-file."
+            ),
+        ) from exc
+    except IsADirectoryError as exc:
+        raise HTTPException(422, f"file_path is a directory, not an image file: {file_path}") from exc
+    except OSError as exc:
+        raise HTTPException(422, f"Could not read server-local file {file_path}: {exc}") from exc
+
+
+@router.post(
+    "/upload-image",
+    summary="Upload image bytes or a server-local image",
+    description=(
+        "JSON upload endpoint. External/API callers should send image_base64. "
+        "file_path is a server-local convenience mode only: the path is opened by "
+        "the FlowKit service user and must be visible inside its systemd namespace."
+    ),
+)
 async def upload_image(body: UploadImageRequest):
-    """Upload a local image file to Google Flow and get a media_id."""
-    import base64, mimetypes
+    """Upload image bytes to Google Flow; prefer image_base64 for external callers."""
     client = get_flow_client()
     if not client.connected:
         raise HTTPException(503, "Extension not connected")
-    try:
-        with open(body.file_path, "rb") as f:
-            image_bytes = f.read()
-    except FileNotFoundError:
-        raise HTTPException(404, f"File not found: {body.file_path}")
-    b64 = base64.b64encode(image_bytes).decode()
-    mime = mimetypes.guess_type(body.file_path)[0] or "image/png"
-    result = await client.upload_image(b64, mime_type=mime, project_id=body.project_id, file_name=body.file_name)
-    if result.get("error") or (isinstance(result.get("status"), int) and result["status"] >= 400):
-        raise HTTPException(_safe_status_code(result.get("status")), result.get("error", result.get("data")))
-    media_id = result.get("_mediaId")
-    return {"media_id": media_id, "raw": result.get("data", result)}
+    if body.image_base64:
+        try:
+            image_bytes = base64.b64decode(body.image_base64, validate=True)
+        except Exception as exc:
+            raise HTTPException(422, "image_base64 is not valid base64") from exc
+        if not image_bytes:
+            raise HTTPException(422, "image_base64 is empty")
+        mime = body.mime_type or mimetypes.guess_type(body.file_name)[0] or "image/png"
+    elif body.file_path:
+        image_bytes = _read_server_local_image(body.file_path)
+        if not image_bytes:
+            raise HTTPException(422, f"Server-local image is empty: {body.file_path}")
+        mime = body.mime_type or mimetypes.guess_type(body.file_path)[0] or "image/png"
+    else:
+        raise HTTPException(
+            422,
+            "image_base64 is recommended; alternatively provide server-local file_path",
+        )
+
+    return await _upload_image_bytes(
+        client,
+        image_bytes,
+        project_id=body.project_id,
+        mime_type=mime,
+        file_name=body.file_name,
+    )
+
+
+@router.post(
+    "/upload-image-file",
+    summary="Upload an image file with multipart/form-data",
+    description=(
+        "Recommended direct-file endpoint for external callers. The uploaded bytes are "
+        "read from the HTTP request, so the caller does not need to share a filesystem "
+        "namespace with the FlowKit service. Leave project_id empty to use/create the "
+        "session project."
+    ),
+)
+async def upload_image_file(
+    file: UploadFile = File(..., description="Image file bytes from the caller."),
+    project_id: str = Form(
+        default="",
+        description="Existing Flow project id, or empty to use/create the session project.",
+    ),
+    file_name: Optional[str] = Form(
+        default=None,
+        description="Optional filename override sent to Google Flow.",
+    ),
+    mime_type: Optional[str] = Form(
+        default=None,
+        description="Optional MIME override; defaults to upload Content-Type or filename inference.",
+    ),
+):
+    """Upload a multipart file without requiring server-local filesystem access."""
+    client = get_flow_client()
+    if not client.connected:
+        raise HTTPException(503, "Extension not connected")
+
+    image_bytes = await file.read()
+    if not image_bytes:
+        raise HTTPException(422, "uploaded image file is empty")
+    resolved_name = file_name or file.filename or "image.png"
+    resolved_mime = (
+        mime_type
+        or file.content_type
+        or mimetypes.guess_type(resolved_name)[0]
+        or "image/png"
+    )
+    return await _upload_image_bytes(
+        client,
+        image_bytes,
+        project_id=project_id,
+        mime_type=resolved_mime,
+        file_name=resolved_name,
+    )
 
 
 @router.get("/debug-cache")
