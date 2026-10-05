@@ -97,7 +97,7 @@ async def test_image_is_saved_locally_with_minted_uuid(provider, gateway):
     gen = parse_result(result, "GENERATE_IMAGE")
     assert gen.success, result
     assert _is_uuid(gen.media_id)
-    assert gen.url.startswith("file://") and gen.url.endswith("/muse2api/img1.png")
+    assert gen.url.startswith("file://") and gen.url.replace("\\", "/").endswith("/muse2api/img1.png")
     assert (provider.output_dir / "img1.png").read_bytes() == PNG
 
     method, path, body = gateway.calls[0]
