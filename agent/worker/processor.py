@@ -459,7 +459,7 @@ async def _handle_failure(rid: str, req: dict, result: dict, retry_after: dict =
         return
 
     # reCAPTCHA errors: retry up to 10 times — deferred dict in main loop handles delay
-    if "captcha" in error_lower or "recaptcha" in error_lower:
+    if "captcha" in error_lower or "recaptcha" in error_lower or "unusual_activity" in error_lower:
         retry = req.get("retry_count", 0) + 1
         if retry < 10:
             await crud.update_request(rid, status="PENDING", retry_count=retry, error_message=str(error_msg))

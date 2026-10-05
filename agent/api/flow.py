@@ -470,3 +470,53 @@ async def upload_image(body: UploadImageRequest):
         raise HTTPException(_safe_status_code(result.get("status")), result.get("error", result.get("data")))
     media_id = result.get("_mediaId")
     return {"media_id": media_id, "raw": result.get("data", result)}
+
+
+@router.get("/debug-cache")
+async def debug_cache():
+    client = get_flow_client()
+    return {
+        "operation_media": client._operation_media,
+        "operation_projects": client._operation_projects,
+        "operation_polls": client._operation_polls,
+    }
+
+
+@router.get("/debug-listing/{operation_id}")
+async def debug_listing(operation_id: str, project_id: str = "594758cc-11f5-4f92-8b3c-1213686591f4"):
+    import agent.services.flow_batch as fb
+    client = get_flow_client()
+    if not client.connected:
+        raise HTTPException(503, "Extension not connected")
+    result = await client.batch_rpc(
+        fb.RPC_PROJECT_MEDIA, fb.project_media_request(project_id),
+        match=operation_id, timeout=30,
+    )
+    raw = result.get("data") or ""
+    mid = fb.find_media_id_in_text(raw, operation_id)
+    return {
+        "operation_id": operation_id,
+        "matched_media_id": mid,
+        "raw_preview": raw[:1000],
+    }
+
+
+@router.get("/debug-project-media")
+async def debug_project_media(project_id: str = "594758cc-11f5-4f92-8b3c-1213686591f4"):
+    import re
+    import agent.services.flow_batch as fb
+    client = get_flow_client()
+    if not client.connected:
+        raise HTTPException(503, "Extension not connected")
+    result = await client.batch_rpc(
+        fb.RPC_PROJECT_MEDIA, fb.project_media_request(project_id),
+        match=None, timeout=60,
+    )
+    raw = result.get("data") or ""
+    uuids = list(set(re.findall(r'[0-9a-fA-F-]{36}', raw)))
+    return {
+        "raw_length": len(raw),
+        "found_uuids_count": len(uuids),
+        "uuids": uuids,
+        "sample": raw[:2000]
+    }

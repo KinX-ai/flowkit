@@ -98,10 +98,15 @@ class TestCreateContactSheetsChunking:
                 symlinks = sorted(chunk_dir.glob("f_*.jpg"))
                 assert len(symlinks) == len(expected_chunk)
                 for link, expected_target in zip(symlinks, expected_chunk):
-                    assert link.resolve() == expected_target.resolve(), (
-                        f"chunk {sheet_idx} symlink {link.name} points to "
-                        f"{link.resolve()}, expected {expected_target.resolve()}"
-                    )
+                    if link.is_symlink():
+                        assert link.resolve() == expected_target.resolve(), (
+                            f"chunk {sheet_idx} symlink {link.name} points to "
+                            f"{link.resolve()}, expected {expected_target.resolve()}"
+                        )
+                    else:
+                        assert link.read_bytes() == expected_target.read_bytes(), (
+                            f"chunk {sheet_idx} file {link.name} content mismatch with {expected_target}"
+                        )
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
 
