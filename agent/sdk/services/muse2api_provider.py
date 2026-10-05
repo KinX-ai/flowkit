@@ -45,6 +45,7 @@ from agent.sdk.services.provider_base import (
     ProviderJob,
 )
 from agent.services.muse2api_client import Muse2APIClient, Muse2APIError, to_data_url
+from agent.utils.paths import file_url_to_path
 
 logger = logging.getLogger(__name__)
 
@@ -186,10 +187,10 @@ class Muse2APIProvider(MediaProvider):
         if parsed.scheme in ("http", "https"):
             canonical = url
         else:
-            local = Path(unquote(parsed.path)) if parsed.scheme == "file" else Path(url)
-            if not local.is_file():
+            local = file_url_to_path(url) if parsed.scheme == "file" else Path(url)
+            if not local or not local.is_file():
                 return {"error": f"muse2api: local image not found for '{name}': {url}"}
-            canonical = "file://" + str(local.resolve())
+            canonical = url if parsed.scheme == "file" else ("file://" + str(local.resolve()))
         mid = str(uuid.uuid4())
         logger.info("muse2api: registered existing image '%s' → media_id=%s", name, mid[:8])
         return {"data": {"media": [{"name": mid}], "url": canonical}}
