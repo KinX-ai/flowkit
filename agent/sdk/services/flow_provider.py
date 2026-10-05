@@ -59,6 +59,16 @@ from agent.worker._parsing import (
 logger = logging.getLogger(__name__)
 
 
+async def _remember_op(client, op_name: str | None, pid: str | None) -> None:
+    if not client or not op_name or not pid:
+        return
+    fn = getattr(client, "_remember_operation", None)
+    if callable(fn):
+        res = fn(op_name, pid)
+        if asyncio.iscoroutine(res):
+            await res
+
+
 def _save_raw_bytes(
     operations: list[dict], scene_id: str, project_slug: str, display_order: int
 ) -> str | None:
@@ -394,6 +404,8 @@ class FlowProvider(MediaProvider):
         # would abandon a running render and pay for a second one.
         if existing_op:
             logger.info("Video gen already submitted (op=%s), re-polling", existing_op[:30])
+            pid = ex.get("project_id") or (req_row.get("project_id") if req_row else None)
+            await _remember_op(self._client, existing_op, pid)
             operations = [{"operation": {"name": existing_op}, "status": "MEDIA_GENERATION_STATUS_PENDING"}]
             return await _poll_operations(self._client, operations)
 
@@ -438,6 +450,7 @@ class FlowProvider(MediaProvider):
             return {"error": "Video gen returned no operations"}
 
         op_name = operations[0].get("operation", {}).get("name", "")
+        await _remember_op(self._client, op_name, ex.get("project_id"))
         if request_id:
             await crud.update_request(request_id, request_id=op_name)
 
@@ -468,6 +481,8 @@ class FlowProvider(MediaProvider):
 
         if existing_op:
             logger.info("R2V already submitted (op=%s), re-polling", existing_op[:30])
+            pid = ex.get("project_id") or (req_row.get("project_id") if req_row else None)
+            await _remember_op(self._client, existing_op, pid)
             operations = [{"operation": {"name": existing_op}, "status": "MEDIA_GENERATION_STATUS_PENDING"}]
             return await _poll_operations(self._client, operations)
 
@@ -488,6 +503,7 @@ class FlowProvider(MediaProvider):
             return {"error": "R2V returned no operations"}
 
         op_name = operations[0].get("operation", {}).get("name", "")
+        await _remember_op(self._client, op_name, ex.get("project_id"))
         if request_id:
             await crud.update_request(request_id, request_id=op_name)
 

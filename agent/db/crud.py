@@ -256,6 +256,7 @@ async def create_request(req_type: str, orientation: str = None,
     return await _get_with_db(db, "request", "id", rid)
 
 async def get_request(rid: str): return await _get("request", "id", rid)
+async def get_request_by_operation_id(op_id: str): return await _get("request", "request_id", op_id)
 async def update_request(rid: str, **kw): return await _update("request", "id", rid, **kw)
 
 async def list_requests(scene_id: str = None, status: str = None,

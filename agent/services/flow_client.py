@@ -987,6 +987,15 @@ class FlowClient:
         self._operation_polls[operation_id] = rounds
 
         project_id = self._operation_projects.get(operation_id) or FLOW_PROJECT_ID
+        if not project_id:
+            try:
+                from agent.db import crud
+                req = await crud.get_request_by_operation_id(operation_id)
+                if req and req.get("project_id"):
+                    project_id = req["project_id"]
+                    self._remember_operation(operation_id, project_id)
+            except Exception:
+                pass
         complaint = None
         worth_looking = rounds % 3 == 0
         try:
