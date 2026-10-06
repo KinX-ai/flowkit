@@ -752,8 +752,8 @@ def find_media_id_in_text(text: str, operation_id: str) -> Optional[str]:
     start = lower_text.find(lower_op)
     if start == -1:
         return None
-    # Search within window of match
-    window_start = max(0, start - 400)
+    # Search within window of match (from operation start onwards to avoid matching previous items)
+    window_start = start
     window_end = min(len(text), start + 800)
     match = _MEDIA_SLOT.search(text, window_start, window_end)
     return match.group(1) if match else None

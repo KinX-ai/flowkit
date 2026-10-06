@@ -163,6 +163,13 @@ Three behaviours on this path routinely look like bugs and are not:
 
 - **A poll can say "Media not found." and the job still finishes.** The project
   listing is what decides; the poll is a hint. Never treat the complaint as fatal.
+- **CRITICAL: Polling timeout must NOT trigger entity re-upload.**
+  `processor.py:_handle_failure` had a bug where matching `"not found"` triggered `_recover_entity_not_found`,
+  which falsely re-uploaded the start image and overwrote the genuine generated scene image media ID.
+  The guard in `processor.py` (line 485) is:
+  `if "not found" in str(error_msg).lower() and "polling timeout" not in str(error_msg).lower():`
+  If a scene's `image_media_id` was accidentally overwritten by this bug, check `/api/requests` history
+  or restore the original generated image media ID from the initial GENERATE_IMAGE completed payload.
 - **A media id arrives before the clip is fetchable.** The media record serves
   the poster image first and grows the `/video/` url in later, so a scene sits
   PENDING for a while after its id exists. Downloading on the id alone saves a

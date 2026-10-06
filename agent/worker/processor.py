@@ -481,12 +481,12 @@ async def _handle_failure(rid: str, req: dict, result: dict, retry_after: dict =
     if isinstance(error_msg, dict):
         error_msg = json.dumps(error_msg)[:200]
 
-    # Auto-recover expired media by re-uploading
-    if "not found" in str(error_msg).lower():
+    # Auto-recover expired media by re-uploading (only on real entity-not-found, never on polling timeout)
+    if "not found" in str(error_msg).lower() and "polling timeout" not in str(error_msg).lower():
         recovered = await _recover_entity_not_found(req)
         if recovered:
             logger.info("Request %s: recovered expired media, retrying", rid[:8])
-            await crud.update_request(rid, status="PENDING", error_message=f"recovered: {error_msg}")
+            await crud.update_request(rid, status="PENDING", request_id=None, error_message=f"recovered: {error_msg}")
             return
 
     error_lower = str(error_msg).lower()

@@ -35,6 +35,7 @@ ROOT = Path(__file__).parent
 SKILLS_DIR = ROOT / "skills"
 CLAUDE_COMMANDS_DIR = ROOT / ".claude" / "commands"
 AGENTS_MD = ROOT / "AGENTS.md"
+ANTIGRAVITY_SKILLS_DIR = ROOT / ".agents" / "skills"
 STATE_FILE = ROOT / ".fk-setup.json"
 
 # Nothing generates these any more; `clean` still removes them so an install
@@ -82,6 +83,46 @@ def generate_claude(skills):
         count += 1
     print(f"Generated {count} Claude commands in .claude/commands/")
     return count
+
+
+def generate_antigravity(skills):
+    """Create .agents/skills/fk-<name>/SKILL.md for Antigravity IDE."""
+    ANTIGRAVITY_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    count = 0
+    for skill in skills:
+        name = skill["name"]
+        skill_id = f"fk-{name}"
+        desc = skill["description"]
+        src = Path(skill["path"])
+        content = src.read_text(encoding="utf-8")
+
+        # Strip existing frontmatter if any
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                body = parts[2].lstrip()
+            else:
+                body = content
+        else:
+            body = content
+
+        dest_dir = ANTIGRAVITY_SKILLS_DIR / skill_id
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / "SKILL.md"
+
+        escaped_desc = desc.replace("'", "''").replace("\n", " ").strip()
+        skill_md = (
+            f"---\n"
+            f"name: {skill_id}\n"
+            f"description: '{escaped_desc}'\n"
+            f"---\n\n"
+            f"{body}\n"
+        )
+        dest.write_text(skill_md, encoding="utf-8")
+        count += 1
+    print(f"Generated {count} Antigravity skills in .agents/skills/")
+    return count
+
 
 
 ## ── Inline content for AGENTS.md ──
@@ -221,6 +262,7 @@ def load_state():
 TOOLS = {
     "claude": generate_claude,
     "codex": generate_codex,
+    "antigravity": generate_antigravity,
 }
 
 
@@ -241,20 +283,18 @@ def do_interactive(skills):
     """Interactive mode: prompt user to pick tools."""
     print("\nFlow Kit — AI Tool Setup\n")
     print("Which AI tool do you drive this project from?")
-    print("  [1] Claude Code    (.claude/commands/)")
-    print("  [2] Codex CLI      (AGENTS.md)")
-    print("  [3] Both")
-    print()
-    print("  (agy / Antigravity reads none of these — it is configured as a")
-    print("   video-review provider instead, via /fk-change-provider.)")
+    print("  [1] Claude Code       (.claude/commands/)")
+    print("  [2] Codex CLI         (AGENTS.md)")
+    print("  [3] Antigravity IDE   (.agents/skills/)")
+    print("  [4] All tools")
     print()
 
-    raw = input("Select (comma-separated, e.g. 1,2): ").strip()
+    raw = input("Select (comma-separated, e.g. 1,2,3): ").strip()
     if not raw:
         print("No selection made. Exiting.")
         return
 
-    mapping = {"1": "claude", "2": "codex", "3": "all"}
+    mapping = {"1": "claude", "2": "codex", "3": "antigravity", "4": "all"}
     choices = [c.strip() for c in raw.split(",")]
 
     tools = []
@@ -314,6 +354,15 @@ def do_clean():
         for f in CLAUDE_COMMANDS_DIR.glob("fk-*.md"):
             f.unlink()
             removed.append(str(f))
+
+    # Antigravity skills
+    if ANTIGRAVITY_SKILLS_DIR.exists():
+        for d in ANTIGRAVITY_SKILLS_DIR.glob("fk-*"):
+            if d.is_dir():
+                for f in d.glob("*"):
+                    f.unlink()
+                d.rmdir()
+                removed.append(str(d))
 
     # Whatever the retired Gemini target left behind. Removed here even
     # though nothing writes it any more — an install from before v1.3.1 has

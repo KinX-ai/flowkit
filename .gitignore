@@ -11,6 +11,7 @@ agent/active_project.json
 
 # Generated AI tool configs (run: python setup.py)
 .claude/commands/fk-*
+.agents/skills/fk-*
 AGENTS.md
 .fk-setup.json
 
@@ -28,3 +29,7 @@ extension/_metadata/
 .agent/
 flow_session_project.json
 .venv/
+*.mp3
+scratch/
+
+series_manifest.json

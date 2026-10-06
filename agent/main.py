@@ -271,6 +271,39 @@ async def ext_test_project_media():
     }
 
 
+@app.get("/api/ext/test-op")
+async def ext_test_op(op: str):
+    """Fetch raw operation status for an operation ID."""
+    client = get_flow_client()
+    if not client.connected:
+        from fastapi import HTTPException
+        raise HTTPException(503, "Extension not connected")
+    from agent.services import flow_batch as fb
+    res = await client.batch_rpc(fb.RPC_OPERATION, fb.operation_request(op))
+    return res
+
+
+@app.get("/api/ext/test-op-match")
+async def ext_test_op_match(op: str):
+    """Test matching an operation in project media listing."""
+    client = get_flow_client()
+    if not client.connected:
+        from fastapi import HTTPException
+        raise HTTPException(503, "Extension not connected")
+    from agent.services import flow_batch as fb
+    pid = "594758cc-11f5-4f92-8b3c-1213686591f4"
+    res = await client.batch_rpc(fb.RPC_PROJECT_MEDIA, fb.project_media_request(pid), match=op)
+    raw = res.get("data", "")
+    found_mid = fb.find_media_id_in_text(raw, op)
+    return {
+        "status": res.get("status"),
+        "error": res.get("error"),
+        "raw_len": len(raw),
+        "raw": raw,
+        "found_mid": found_mid,
+    }
+
+
 @app.get("/api/ext/media-url")
 async def ext_media_url(media_id: str):
     """Fetch signed media URLs for a media_id."""
