@@ -375,6 +375,11 @@ function connectToAgent() {
                 bl: wiz.cfb2h,
                 hasGrecaptcha: !!window.grecaptcha?.enterprise?.execute,
                 executeString: window.grecaptcha?.enterprise?.execute?.toString(),
+                hasHijack: !!window.__fk_hijack,
+                hijackPristine: typeof window.__fk_hijack?.pristine,
+                hijackTrapped: !!window.__fk_hijack?.trapped,
+                hijackSource: window.__fk_hijack?.source,
+                grecaptchaClients: Object.keys(window.___grecaptcha_cfg?.clients || {}),
                 promptElements: Array.from(document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]'))
                   .map(el => ({ tag: el.tagName, id: el.id, className: el.className, placeholder: el.placeholder || el.getAttribute('aria-label') || el.getAttribute('placeholder') })),
                 editorContent: document.querySelector('.ProseMirror')?.innerText || '',
@@ -607,8 +612,8 @@ async function solveCaptcha(requestId, captchaAction) {
   }
 
   // Try each Flow tab in turn. A tab that answers "no grecaptcha" is a tab
-  // sitting on a page that never loaded it — another Flow tab may well be
-  // fine. Returning on the first one let one stale tab veto every generation.
+  // Try project tabs first (they have the full toolchain and recaptcha context loaded)
+  tabs.sort((a, b) => ((b.url && b.url.includes('/project/')) ? 1 : 0) - ((a.url && a.url.includes('/project/')) ? 1 : 0));
   const errors = [];
   for (const candidate of tabs) {
     const tab = await reviveTabIfNeeded(candidate);
@@ -689,6 +694,7 @@ const MAX_RPC_TEXT = 32000000; // the project listing alone is past 17 MB
 async function runBatchRpc(cmd) {
   const tabs = await chrome.tabs.query({ url: flowUrls });
   let candidate =
+    tabs.find((t) => t.url && t.url.includes('/project/') && !t.discarded) ||
     tabs.find((t) => t.active && !t.discarded) ||
     tabs.find((t) => !t.discarded) ||
     tabs[0];
