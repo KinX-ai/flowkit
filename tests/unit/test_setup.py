@@ -35,6 +35,7 @@ def sandbox(setup_mod, monkeypatch, tmp_path):
     monkeypatch.setattr(
         setup_mod, "LEGACY_GEMINI_COMMANDS_DIR", tmp_path / ".gemini" / "commands" / "fk")
     monkeypatch.setattr(setup_mod, "LEGACY_GEMINI_MD", tmp_path / "GEMINI.md")
+    monkeypatch.setattr(setup_mod, "ANTIGRAVITY_SKILLS_DIR", tmp_path / ".agents" / "skills")
     (tmp_path / "skills").mkdir()
     (tmp_path / "skills" / "fk-demo.md").write_text("# fk-demo — A demo skill\n", encoding="utf-8")
     return tmp_path
@@ -46,9 +47,16 @@ def sandbox(setup_mod, monkeypatch, tmp_path):
 class TestRetiredGeminiTarget:
     def test_gemini_is_not_a_generator_any_more(self, setup_mod):
         assert "gemini" not in setup_mod.TOOLS
-        assert set(setup_mod.TOOLS) == {"claude", "codex"}
+        assert set(setup_mod.TOOLS) == {"claude", "codex", "antigravity"}
         assert not hasattr(setup_mod, "generate_gemini")
         assert not hasattr(setup_mod, "generate_gemini_md")
+
+    def test_antigravity_generator_creates_skills(self, setup_mod, sandbox):
+        skills = setup_mod.discover_skills()
+        count = setup_mod.generate_antigravity(skills)
+        assert count > 0
+        assert (sandbox / ".agents" / "skills" / "fk-demo" / "SKILL.md").exists()
+
 
     def test_a_stale_state_file_naming_gemini_does_not_crash_sync(
         self, setup_mod, sandbox, capsys
